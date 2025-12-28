@@ -2,9 +2,8 @@ name: Scrape Weather Data
 
 on:
   schedule:
-    # Runs every 3 hours (adjust cron as needed)
-    - cron: "0 */3 * * *"
-  workflow_dispatch: # Allows manual run from GitHub button
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,11 +15,13 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.9"
+          python-version: '3.9'
 
       - name: Install Dependencies
         run: |
@@ -30,10 +31,22 @@ jobs:
         run: |
           python scraper.py
 
+      # --- NEW DEBUG STEP ---
+      - name: Verify Files Created
+        run: |
+          echo "Listing all files in archive folder:"
+          ls -R archive/
+          echo "Listing docs folder:"
+          ls -l docs/
+
       - name: Commit and Push Changes
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
+          
+          # Force add the new files
+          git add archive/
           git add docs/data.xlsx
-          # Only commit if data changed
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update weather data" && git push)
+          
+          # Commit only if changes exist
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update: Weather data [skip ci]" && git push)
