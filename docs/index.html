@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SL Weather Interpolation</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-gray-950 text-white overflow-hidden relative">
+
+    <div class="absolute top-6 left-6 z-[1000] w-96 glass-panel rounded-2xl p-6 transition-all flex flex-col gap-6">
+        
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-xl font-bold tracking-tight text-white">Weather Surface</h1>
+                <p class="text-[11px] text-gray-400 uppercase tracking-widest">IDW Interpolation</p>
+            </div>
+            <div id="status-indicator" class="loader"></div>
+        </div>
+
+        <div>
+            <div class="flex justify-between items-end mb-3">
+                <label class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Select Date</label>
+                <span id="selected-date-display" class="text-sm font-bold text-blue-400">Loading...</span>
+            </div>
+            <input type="range" id="dateSlider" min="0" max="0" value="0" disabled>
+            <div class="flex justify-between mt-2 text-[9px] text-gray-600 font-mono">
+                <span>START</span>
+                <span>END</span>
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-[10px] font-bold text-gray-500 mb-3 uppercase tracking-widest">Observation Time</label>
+            <div id="time-grid" class="grid grid-cols-4 gap-2">
+                <div class="text-xs text-gray-600 italic col-span-4">Select a date to see times</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 pt-2 border-t border-white/5">
+            <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+                <span class="text-[9px] text-gray-400 uppercase font-bold">Avg Temp</span>
+                <div class="text-xl font-bold text-blue-400 mt-1" id="avg-temp">--</div>
+            </div>
+            <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+                <span class="text-[9px] text-gray-400 uppercase font-bold">Active Stn</span>
+                <div class="text-xl font-bold text-emerald-400 mt-1" id="station-count">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="leaflet-idw.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="script.js"></script>
+
+</body>
+</html>
