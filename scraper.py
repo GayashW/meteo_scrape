@@ -6,18 +6,19 @@ import shutil
 import sys
 import os
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 SOURCE_URL = "https://meteo.gov.lk/excels/3hourly.xlsx"
 DATA_DIR = Path("docs")
-MASTER_FILE = DATA_DIR / "data.xlsx"  # The combined history file
-ARCHIVE_DIR = Path("archive")         # Raw snapshots
-MAX_ARCHIVE_PER_DAY = 30 
+MASTER_FILE = DATA_DIR / "data.xlsx"  # The file used by the website
+ARCHIVE_DIR = Path("archive")         # The folder for history backups
+MAX_ARCHIVE_PER_DAY = 30              # Safety limit to keep folders clean
 
-# Ensure directories exist
+# Ensure folders exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_file(path: Path):
+    """Downloads the Excel file from the Met Dept."""
     print(f"Downloading from {SOURCE_URL}...")
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -31,6 +32,7 @@ def download_file(path: Path):
         sys.exit(1)
 
 def cleanup_archives(day_folder: Path):
+    """Deletes old files if there are more than 30 in one day."""
     archives = sorted(day_folder.glob("*.xlsx"))
     if len(archives) > MAX_ARCHIVE_PER_DAY:
         print(f"Cleaning old archives in {day_folder.name}...")
@@ -40,18 +42,40 @@ def cleanup_archives(day_folder: Path):
 def main():
     temp_file = Path("temp_download.xlsx")
     
-    # 1. Download the latest 3-hour snapshot
+    # 1. DOWNLOAD
     download_file(temp_file)
 
     try:
-        # 2. Read the new snapshot
+        # 2. ARCHIVE (Do this FIRST so we never miss a file)
         new_df = pd.read_excel(temp_file)
         
-        # Standardize columns (ensure time is string for matching)
+        # Get the date from the data (or use today's date if that fails)
+        try:
+            if 'Report_Time' in new_df.columns:
+                first_val = str(new_df['Report_Time'].iloc[0])
+                sample_date = first_val.split(' ')[0] # Extract "2025-12-29"
+            else:
+                sample_date = datetime.utcnow().strftime("%Y-%m-%d")
+        except:
+            sample_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+        # Create folder: archive/2025-12-29/
+        day_folder = ARCHIVE_DIR / sample_date
+        day_folder.mkdir(parents=True, exist_ok=True)
+        
+        # Save as: archive/2025-12-29/0830.xlsx
+        timestamp = datetime.utcnow().strftime("%H%M")
+        archive_name = day_folder / f"{timestamp}.xlsx"
+        
+        shutil.copy2(temp_file, archive_name)
+        print(f"Archived snapshot to: {archive_name}")
+        cleanup_archives(day_folder)
+
+        # 3. MERGE WITH MASTER FILE (For the Website)
+        # Standardize time format to string for accurate comparison
         if 'Report_Time' in new_df.columns:
             new_df['Report_Time'] = new_df['Report_Time'].astype(str).str.strip()
         
-        # 3. Load the existing Master File (History)
         if MASTER_FILE.exists():
             master_df = pd.read_excel(MASTER_FILE)
             if 'Report_Time' in master_df.columns:
@@ -60,67 +84,36 @@ def main():
             print("No master file found. Creating new one.")
             master_df = pd.DataFrame()
 
-        # 4. COMPARE CONTENT: Check for New Data
-        # We assume data is "new" if the combination of (Station + Time) is not in master
+        # Combine old data + new data
         if not master_df.empty:
-            # Combine Old + New
             combined_df = pd.concat([master_df, new_df])
             
-            # Check size before deduplication
-            len_before = len(combined_df)
-            
-            # Remove Duplicates
-            # We keep 'last' (the new one) to ensure we have the freshest version
+            # THE SMART PART: Remove Duplicates
+            # If "Colombo 08:30" is in both files, keep only the newest one.
             combined_df.drop_duplicates(subset=['Station_Name', 'Report_Time'], keep='last', inplace=True)
             
-            len_after = len(combined_df)
-            
-            # If length didn't change after adding new_df, then new_df was fully duplicate
-            # CAUTION: We must compare len_after vs len(master_df) 
+            # Check if we actually added anything new
             if len(combined_df) == len(master_df):
-                print("Content Check: Identical to existing data. Skipping update.")
-                temp_file.unlink()
-                sys.exit(0)
+                print("Master File Check: No new unique records found.")
             else:
-                print(f"Content Check: Found {len(combined_df) - len(master_df)} new records!")
+                print(f"Master File Check: Added {len(combined_df) - len(master_df)} new records.")
         else:
             combined_df = new_df
-            print("Initial setup: Using downloaded file as master.")
 
-        # 5. SAVE UPDATES
-        
-        # A) Update Master (Combined)
-        # Sort by time so the slider works nicely
+        # 4. SAVE MASTER
         if 'Report_Time' in combined_df.columns:
             combined_df.sort_values(by='Report_Time', inplace=True)
             
         combined_df.to_excel(MASTER_FILE, index=False)
         print(f"Updated Master File: {MASTER_FILE}")
 
-        # B) Archive the Snapshot (Only if it was new data)
-        # Determine date from the data itself, or fallback to today
-        try:
-            sample_date = new_df['Report_Time'].iloc[0].split(' ')[0] # "2025-12-29"
-        except:
-            sample_date = datetime.utcnow().strftime("%Y-%m-%d")
-
-        day_folder = ARCHIVE_DIR / sample_date
-        day_folder.mkdir(parents=True, exist_ok=True)
-        
-        timestamp = datetime.utcnow().strftime("%H%M")
-        archive_name = day_folder / f"{timestamp}.xlsx"
-        
-        # Move the raw download to archive
-        shutil.move(temp_file, archive_name)
-        print(f"Archived snapshot to: {archive_name}")
-        
-        cleanup_archives(day_folder)
-
     except Exception as e:
         print(f"Processing Error: {e}")
+        sys.exit(1)
+    finally:
+        # Clean up the temp file from the root folder
         if temp_file.exists():
             temp_file.unlink()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
