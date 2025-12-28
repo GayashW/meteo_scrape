@@ -1,104 +1,126 @@
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup
+from pathlib import Path
 from datetime import datetime
+import shutil
+import sys
 import os
 
-# --- CONFIGURATION ---
-URL = "http://www.meteo.gov.lk/index.php?option=com_content&view=article&id=103&Itemid=310&lang=en"
-OUTPUT_DIR = "docs"
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "data.xlsx")
+# --- CONFIG ---
+SOURCE_URL = "https://meteo.gov.lk/excels/3hourly.xlsx"
+DATA_DIR = Path("docs")
+MASTER_FILE = DATA_DIR / "data.xlsx"  # The combined history file
+ARCHIVE_DIR = Path("archive")         # Raw snapshots
+MAX_ARCHIVE_PER_DAY = 30 
 
-# Headers to mimic a real browser (prevents blocking)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-}
+# Ensure directories exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-def scrape_weather():
-    print(f"Fetching data from {URL}...")
+def download_file(path: Path):
+    print(f"Downloading from {SOURCE_URL}...")
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(URL, headers=HEADERS, timeout=15)
-        response.raise_for_status()
+        r = requests.get(SOURCE_URL, headers=headers, timeout=60)
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(r.content)
+        print("Download successful.")
     except Exception as e:
-        print(f"Error fetching page: {e}")
-        return
+        print(f"Download Error: {e}")
+        sys.exit(1)
 
-    soup = BeautifulSoup(response.content, "html.parser")
+def cleanup_archives(day_folder: Path):
+    archives = sorted(day_folder.glob("*.xlsx"))
+    if len(archives) > MAX_ARCHIVE_PER_DAY:
+        print(f"Cleaning old archives in {day_folder.name}...")
+        for old_file in archives[:-MAX_ARCHIVE_PER_DAY]:
+            old_file.unlink()
+
+def main():
+    temp_file = Path("temp_download.xlsx")
     
-    # Find the data table
-    table = soup.find("table")
-    if not table:
-        print("No table found on the webpage.")
-        return
+    # 1. Download the latest 3-hour snapshot
+    download_file(temp_file)
 
-    # Parse table using Pandas
     try:
-        dfs = pd.read_html(str(table))
-        df = dfs[0]
-    except Exception as e:
-        print(f"Error parsing table: {e}")
-        return
+        # 2. Read the new snapshot
+        new_df = pd.read_excel(temp_file)
+        
+        # Standardize columns (ensure time is string for matching)
+        if 'Report_Time' in new_df.columns:
+            new_df['Report_Time'] = new_df['Report_Time'].astype(str).str.strip()
+        
+        # 3. Load the existing Master File (History)
+        if MASTER_FILE.exists():
+            master_df = pd.read_excel(MASTER_FILE)
+            if 'Report_Time' in master_df.columns:
+                master_df['Report_Time'] = master_df['Report_Time'].astype(str).str.strip()
+        else:
+            print("No master file found. Creating new one.")
+            master_df = pd.DataFrame()
 
-    # --- CLEANING & RENAMING ---
-    # The Met Dept table headers often change slightly, so we standardize them.
-    # We rename columns to match what your script.js expects.
-    
-    # Standardize column names based on position (safer than name matching)
-    # Assumes standard Met Dept layout: ID, Name, Date, Rain, TotRain, Temp, RH, Type
-    if len(df.columns) >= 8:
-        df.columns = [
-            'Station_ID', 
-            'Station_Name', 
-            'Report_Time', 
-            'Rainfall (mm)', 
-            'Tot RF since 830am', 
-            'Temperature ( C )', 
-            'RH (%)', 
-            'weathertype'
-        ]
-    else:
-        print("Table structure changed! Columns found:", df.columns)
-        return
-
-    # Clean numeric columns (force numeric, coerce errors to NaN)
-    df['Temperature ( C )'] = pd.to_numeric(df['Temperature ( C )'], errors='coerce')
-    df['Rainfall (mm)'] = pd.to_numeric(df['Rainfall (mm)'], errors='coerce')
-
-    # Ensure Report_Time is a string format your JS can parse
-    # JS expects "YYYY-MM-DD HHMM" or similar. 
-    # Usually the website gives it clean, but let's ensure it's treated as string.
-    df['Report_Time'] = df['Report_Time'].astype(str)
-
-    # --- MERGING WITH HISTORY ---
-    # We want to keep past data so the slider works.
-    
-    # 1. Load existing data if it exists
-    if os.path.exists(OUTPUT_FILE):
-        try:
-            old_df = pd.read_excel(OUTPUT_FILE)
-            print(f"Loaded {len(old_df)} existing records.")
+        # 4. COMPARE CONTENT: Check for New Data
+        # We assume data is "new" if the combination of (Station + Time) is not in master
+        if not master_df.empty:
+            # Combine Old + New
+            combined_df = pd.concat([master_df, new_df])
             
-            # Combine old and new
-            combined_df = pd.concat([old_df, df])
+            # Check size before deduplication
+            len_before = len(combined_df)
             
-            # Remove duplicates based on Station and Time
-            # (We keep the 'last' one which is the newest scrape)
+            # Remove Duplicates
+            # We keep 'last' (the new one) to ensure we have the freshest version
             combined_df.drop_duplicates(subset=['Station_Name', 'Report_Time'], keep='last', inplace=True)
             
-            # Sort by time
-            combined_df.sort_values(by='Report_Time', ascending=True, inplace=True)
+            len_after = len(combined_df)
             
-        except Exception as e:
-            print(f"Could not read existing file, starting fresh. Error: {e}")
-            combined_df = df
-    else:
-        print("No existing data file found. Creating new one.")
-        combined_df = df
+            # If length didn't change after adding new_df, then new_df was fully duplicate
+            # CAUTION: We must compare len_after vs len(master_df) 
+            if len(combined_df) == len(master_df):
+                print("Content Check: Identical to existing data. Skipping update.")
+                temp_file.unlink()
+                sys.exit(0)
+            else:
+                print(f"Content Check: Found {len(combined_df) - len(master_df)} new records!")
+        else:
+            combined_df = new_df
+            print("Initial setup: Using downloaded file as master.")
 
-    # --- SAVING ---
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    combined_df.to_excel(OUTPUT_FILE, index=False)
-    print(f"Successfully saved {len(combined_df)} records to {OUTPUT_FILE}")
+        # 5. SAVE UPDATES
+        
+        # A) Update Master (Combined)
+        # Sort by time so the slider works nicely
+        if 'Report_Time' in combined_df.columns:
+            combined_df.sort_values(by='Report_Time', inplace=True)
+            
+        combined_df.to_excel(MASTER_FILE, index=False)
+        print(f"Updated Master File: {MASTER_FILE}")
+
+        # B) Archive the Snapshot (Only if it was new data)
+        # Determine date from the data itself, or fallback to today
+        try:
+            sample_date = new_df['Report_Time'].iloc[0].split(' ')[0] # "2025-12-29"
+        except:
+            sample_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+        day_folder = ARCHIVE_DIR / sample_date
+        day_folder.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.utcnow().strftime("%H%M")
+        archive_name = day_folder / f"{timestamp}.xlsx"
+        
+        # Move the raw download to archive
+        shutil.move(temp_file, archive_name)
+        print(f"Archived snapshot to: {archive_name}")
+        
+        cleanup_archives(day_folder)
+
+    except Exception as e:
+        print(f"Processing Error: {e}")
+        if temp_file.exists():
+            temp_file.unlink()
+        sys.exit(1)
 
 if __name__ == "__main__":
-    scrape_weather()
+    main()
