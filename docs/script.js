@@ -1,13 +1,31 @@
-// --- 1. SETUP MAP ---
-const slBounds = [[5.8, 79.5], [9.9, 82.0]]; // Sri Lanka Bounds
+// ======================================================
+// 0. IDW COMPATIBILITY LAYER (CRITICAL FIX)
+// ======================================================
+function createIdwLayer(points, options) {
+    if (L.idwLayer) return L.idwLayer(points, options);
+    if (L.idw) return L.idw(points, options);
+    if (L.IdwLayer) return new L.IdwLayer(points, options);
+    throw new Error("Leaflet IDW plugin not found");
+}
 
-const map = L.map('map', { 
+// ======================================================
+// 1. GLOBAL FIXED TEMPERATURE SCALE (PREDEFINED)
+// ======================================================
+const GLOBAL_MIN_TEMP = 15; // °C
+const GLOBAL_MAX_TEMP = 40; // °C
+
+// ======================================================
+// 2. SETUP MAP
+// ======================================================
+const slBounds = [[5.8, 79.5], [9.9, 82.0]];
+
+const map = L.map('map', {
     zoomControl: false,
     maxBounds: slBounds,
     maxBoundsViscosity: 1.0,
-    minZoom: 7,
-    maxZoom: 12
-}).setView([7.8731, 80.7718], 8);
+    minZoom: 8,
+    maxZoom: 20
+}).setView([7.8731, 80.7718], 10);
 
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
@@ -20,9 +38,29 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 let idwLayer = null;
 let markersLayer = L.layerGroup().addTo(map);
 let globalData = [];
-let groupedData = {}; // Object to hold dates and their times: { "2025-12-27": ["1730", "2330"] }
+let groupedData = {};
 
-// --- 2. STATION DB ---
+// ======================================================
+// 3. AUTO-ZOOM TO USER LOCATION
+// ======================================================
+if ("geolocation" in navigator) {
+    navigator.geolocation.getCurrentPosition(
+        position => {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+
+            const insideSL = lat >= 5.8 && lat <= 9.9 && lng >= 79.5 && lng <= 82.0;
+
+            if (insideSL) map.setView([lat, lng], 10, { animate: true });
+        },
+        error => console.warn("Geolocation denied or unavailable"),
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+}
+
+// ======================================================
+// 4. STATION DATABASE
+// ======================================================
 const stationDb = {
     "JAFFNA": { lat: 9.6615, lng: 80.0255 },
     "MULLATIVU": { lat: 9.2671, lng: 80.8142 },
@@ -50,209 +88,149 @@ const stationDb = {
     "MONARAGALA": { lat: 6.8714, lng: 81.3487 }
 };
 
-// --- 3. RENDER FUNCTION (The Core) ---
+// ======================================================
+// 5. CORE RENDER FUNCTION
+// ======================================================
 function renderMap(dateStr, timeStr) {
-    const fullSearchString = `${dateStr} ${timeStr}`; // e.g., "2025-12-28 0830"
-    console.log(`Rendering: ${fullSearchString}`);
-    
+    const search = `${dateStr} ${timeStr}`;
     markersLayer.clearLayers();
     if (idwLayer) map.removeLayer(idwLayer);
 
-    // Filter by Exact Date & Time
-    const filteredData = globalData.filter(row => {
-        const reportTime = row['Report_Time']; 
-        return reportTime && reportTime.toString().trim() === fullSearchString;
-    });
+    const filtered = globalData.filter(row => row['Report_Time']?.toString().trim().replace(/\s+/g, ' ') === search);
 
-    if (filteredData.length === 0) {
-        console.warn("No data for this timestamp.");
+    if (!filtered.length) {
         document.getElementById('station-count').innerText = "0";
         document.getElementById('avg-temp').innerText = "--";
         return;
     }
 
     const points = [];
-    let dailyMax = -100;
-    let dailyMin = 100;
-    let totalTemp = 0;
-    
-    // 1. Scan for Min/Max
-    filteredData.forEach(row => {
-        const rawTemp = row['Temperature ( C )'];
-        const temp = parseFloat(rawTemp);
-        if (!isNaN(temp)) {
-            if (temp > dailyMax) dailyMax = temp;
-            if (temp < dailyMin) dailyMin = temp;
-        }
-    });
+    let sum = 0, count = 0;
 
-    const safeMax = dailyMax + 2.0; 
-    const minPct = dailyMin / safeMax;
-    const maxPct = dailyMax / safeMax;
-    const range = maxPct - minPct;
+    filtered.forEach(row => {
+        let name = row['Station_Name']?.trim().toUpperCase() || "";
+        if (name === "POTUVIL") name = "POTTUVIL";
 
-    // 2. Build Gradient
-    const dynamicGradient = {};
-    dynamicGradient[0.0] = '#0000ff';         
-    dynamicGradient[minPct] = '#0000ff';      
-    dynamicGradient[minPct + (range * 0.33)] = '#00ff00'; // Green
-    dynamicGradient[minPct + (range * 0.66)] = '#ffff00'; // Yellow
-    dynamicGradient[0.98] = '#ff0000';        // Red
-
-    // 3. Create Points
-    filteredData.forEach(row => {
-        let stationName = row['Station_Name'] ? row['Station_Name'].trim().toUpperCase() : "";
-        if(stationName === "POTUVIL") stationName = "POTTUVIL"; 
-        
         const temp = parseFloat(row['Temperature ( C )']);
+        if (!stationDb[name] || isNaN(temp)) return;
 
-        if (stationDb[stationName] && !isNaN(temp)) {
-            const { lat, lng } = stationDb[stationName];
-            points.push([lat, lng, temp]);
-            
-            // Marker
-            const marker = L.circleMarker([lat, lng], {
-                radius: 4, fillColor: "#fff", color: "rgba(0,0,0,0.5)", weight: 1, opacity: 1, fillOpacity: 1
-            });
+        const { lat, lng } = stationDb[name];
+        points.push([lat, lng, temp]);
+        sum += temp;
+        count++;
 
-            // Fancy Popup
-            const weatherType = row['weathertype'] || 'Unknown';
-            const popupContent = `
-                <div class="station-card">
-                    <div class="station-name">${stationName}</div>
-                    <div class="station-temp">${temp.toFixed(1)}°C</div>
-                    <div class="station-meta">${weatherType}</div>
-                </div>
-            `;
-            
-            marker.bindTooltip(popupContent, { 
-                permanent: false, direction: "top", className: "modern-tooltip", offset: [0, -10]
-            });
+        const marker = L.circleMarker([lat, lng], {
+            radius: 4,
+            fillColor: "#fff",
+            color: "#000",
+            weight: 1,
+            fillOpacity: 1
+        });
 
-            markersLayer.addLayer(marker);
-            totalTemp += temp;
-        }
+        marker.bindTooltip(`
+            <div class="station-card">
+                <div class="station-name">${name}</div>
+                <div class="station-temp">${temp.toFixed(1)}°C</div>
+                <div class="station-meta">${row['weathertype'] || 'Unknown'}</div>
+            </div>
+        `, { direction: "top", className: "modern-tooltip", offset: [0, -10] });
+
+        markersLayer.addLayer(marker);
     });
 
-    // Update UI Stats
-    document.getElementById('station-count').innerText = points.length;
-    document.getElementById('avg-temp').innerText = points.length > 0 ? (totalTemp / points.length).toFixed(1) + "°C" : "--";
+    document.getElementById('station-count').innerText = count;
+    document.getElementById('avg-temp').innerText = count ? (sum / count).toFixed(1) + "°C" : "--";
 
-    // 4. Draw IDW
-    if (points.length > 0) {
-        idwLayer = L.idwLayer(points, {
-            opacity: 0.5,
-            maxZoom: 18,
-            cellSize: 30, // Optimized
-            exp: 3,
-            max: safeMax,
-            radius: 150, // Global
-            gradient: dynamicGradient
-        }).addTo(map);
-        markersLayer.bringToFront();
-    }
+    if (!points.length) return;
+
+    const gradient = {
+        0.0: "#313695", 0.2: "#4575b4", 0.4: "#74add1",
+        0.5: "#ffffbf", 0.6: "#fdae61", 0.8: "#f46d43", 1.0: "#a50026"
+    };
+
+    idwLayer = createIdwLayer(points, {
+        opacity: 0.5, cellSize: 30, exp: 3, min: GLOBAL_MIN_TEMP,
+        max: GLOBAL_MAX_TEMP, radius: 150, gradient
+    }).addTo(map);
+
+    markersLayer.bringToFront();
 }
 
-// --- 4. DATA PARSING & UI LOGIC ---
-
+// ======================================================
+// 6. DATA PARSING
+// ======================================================
 function processData(buffer) {
-    const workbook = XLSX.read(buffer);
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
-    globalData = XLSX.utils.sheet_to_json(worksheet);
-    
-    // Group Data by Date
+    const wb = XLSX.read(buffer);
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    globalData = XLSX.utils.sheet_to_json(ws);
+
     groupedData = {};
     globalData.forEach(row => {
-        const rawTime = row['Report_Time']; // "2025-12-28 0830"
-        if(rawTime) {
-            const parts = rawTime.trim().split(' ');
-            if(parts.length === 2) {
-                const date = parts[0]; // "2025-12-28"
-                const time = parts[1]; // "0830"
-                
-                if(!groupedData[date]) groupedData[date] = new Set();
-                groupedData[date].add(time);
-            }
-        }
+        if (!row['Report_Time']) return;
+        const [date, time] = row['Report_Time'].toString().trim().split(' ');
+        if (!groupedData[date]) groupedData[date] = new Set();
+        groupedData[date].add(time);
     });
 
-    // Extract sorted unique dates
-    const uniqueDates = Object.keys(groupedData).sort();
-    
-    if (uniqueDates.length > 0) {
-        setupSlider(uniqueDates);
-        const status = document.getElementById('status-indicator');
-        status.innerHTML = '✔'; // Success checkmark
-        status.className = 'text-green-500 font-bold';
+    const dates = Object.keys(groupedData).sort();
+    if (dates.length) {
+        setupSlider(dates);
+        setupPlayControls(dates);
     }
+
+    const status = document.getElementById('status-indicator');
+    status.className = 'text-green-500 font-bold';
+    status.innerText = '✔';
 }
 
+// ======================================================
+// 7. SLIDER AND TIME CHIPS
+// ======================================================
 function setupSlider(dates) {
     const slider = document.getElementById('dateSlider');
-    const display = document.getElementById('selected-date-display');
-    
-    slider.min = 0;
-    slider.max = dates.length - 1;
-    slider.value = 0;
-    slider.disabled = false;
+    slider.min = 0; slider.max = dates.length - 1; slider.disabled = false;
+    slider.value = dates.length - 1; // latest date
+    updateTimeGrid(dates[dates.length - 1]);
 
-    // Initial Load
-    updateTimeGrid(dates[0]);
-
-    // Listener
-    slider.addEventListener('input', (e) => {
-        const idx = e.target.value;
-        const selectedDate = dates[idx];
-        updateTimeGrid(selectedDate);
-    });
+    slider.oninput = e => updateTimeGrid(dates[e.target.value]);
 }
 
-function updateTimeGrid(dateStr) {
-    document.getElementById('selected-date-display').innerText = dateStr;
-    const container = document.getElementById('time-grid');
-    container.innerHTML = ''; // Clear old buttons
+function updateTimeGrid(date) {
+    document.getElementById('selected-date-display').innerText = date;
+    const grid = document.getElementById('time-grid'); grid.innerHTML = "";
+    const times = [...groupedData[date]].sort();
+    const latestTime = times[times.length - 1];
 
-    // Get times for this date and sort them
-    const times = Array.from(groupedData[dateStr]).sort();
-
-    times.forEach((time, index) => {
+    times.forEach(time => {
         const btn = document.createElement('button');
-        btn.className = `time-chip border border-white/20 rounded-lg py-2 text-xs font-semibold text-gray-300 hover:text-white`;
+        btn.className = 'time-chip border border-white/20 rounded-lg py-2 text-xs font-semibold text-gray-300';
         btn.innerText = time;
-        
+
         btn.onclick = () => {
-            // Remove active class from all
             document.querySelectorAll('.time-chip').forEach(b => b.classList.remove('active', 'border-blue-500'));
-            // Add active to this
             btn.classList.add('active', 'border-blue-500');
-            renderMap(dateStr, time);
+            renderMap(date, time);
         };
 
-        container.appendChild(btn);
-
-        // Auto-select the first time
-        if(index === 0) btn.click();
+        grid.appendChild(btn);
+        if (time === latestTime) btn.click();
     });
 }
 
-// File Loader Logic
-window.onload = function() {
-    if (window.location.protocol === 'file:') {
-        createManualUploader();
-    } else {
-        fetchData();
-    }
+// ======================================================
+// 8. DATA LOADING
+// ======================================================
+window.onload = () => {
+    if (location.protocol === 'file:') createManualUploader();
+    else fetchData();
 };
 
 async function fetchData() {
     try {
-        const response = await fetch('data.xlsx');
-        if (!response.ok) throw new Error("Net");
-        const arrayBuffer = await response.arrayBuffer();
-        processData(arrayBuffer);
-    } catch (e) {
-        console.log("Auto-load failed, switching to manual.");
+        const res = await fetch('data.xlsx');
+        const buf = await res.arrayBuffer();
+        processData(buf);
+    } catch {
         createManualUploader();
     }
 }
@@ -260,17 +238,16 @@ async function fetchData() {
 function createManualUploader() {
     const status = document.getElementById('status-indicator');
     status.className = 'bg-red-500 text-white text-[10px] p-2 rounded cursor-pointer';
-    status.innerHTML = `📂 Load`;
+    status.innerText = '📂 Load';
     status.onclick = () => {
         const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.xlsx, .xls';
-        input.onchange = (e) => {
-            const file = e.target.files[0];
+        input.type = 'file'; input.accept = '.xlsx,.xls';
+        input.onchange = e => {
             const reader = new FileReader();
-            reader.onload = (e) => processData(e.target.result);
-            reader.readAsArrayBuffer(file);
+            reader.onload = ev => processData(ev.target.result);
+            reader.readAsArrayBuffer(e.target.files[0]);
         };
         input.click();
     };
 }
+
