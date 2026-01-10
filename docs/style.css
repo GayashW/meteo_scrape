@@ -6,11 +6,14 @@ body {
 }
 
 #map {
+    position: absolute;
+    inset: 0;
     height: 100vh;
     width: 100%;
     z-index: 0;
-    background: #0f172a; /* Match dark theme */
+    background: #0f172a;
 }
+
 
 /* --- Glass Panel --- */
 .glass-panel {
@@ -121,3 +124,5 @@ input[type=range]::-webkit-slider-runnable-track {
     animation: spin 1s linear infinite;
 }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+
