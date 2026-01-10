@@ -20,7 +20,7 @@
                 <h1 class="text-xl font-bold tracking-tight text-white">Weather Surface</h1>
                 <p class="text-[11px] text-gray-400 uppercase tracking-widest">IDW Interpolation</p>
             </div>
-            <div id="status-indicator" class="loader"></div>
+            <!-- <div id="status-indicator" class="loader"></div> -->
         </div>
 
         <div>
@@ -54,7 +54,15 @@
         </div>
     </div>
 
-    <div id="map"></div>
+    <div id="map" class="absolute inset-0 z-0"></div>
+
+
+    <div id="play-controls" class="absolute bottom-6 left-6 z-[1000] flex items-center gap-2">
+        <select id="start-date"></select>
+        <select id="end-date"></select>
+        <button id="play-btn" class="px-2 py-1 bg-blue-500 text-white rounded">Play</button>
+    </div>
+
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="leaflet-idw.js"></script>
